@@ -3,7 +3,7 @@ Transaction Validator API - Financial transaction validation service.
 Validates transaction structure, detects fraud signals, returns risk scores.
 """
 
-from flask import Flask, request
+from flask import Flask, request, make_response
 from flask_restx import Api, Resource, fields, Namespace
 from datetime import datetime, timedelta
 import logging
@@ -18,9 +18,49 @@ api = Api(
     version='1.0.0',
     title='Transaction Validator API',
     description='Real-time financial transaction validation with fraud detection.',
-    doc='/docs',
-    prefix=''
+    doc=False,
+    prefix='',
+    validate=True
 )
+
+SWAGGER_UI_HTML = '''<!DOCTYPE html>
+<html>
+<head>
+    <title>Transaction Validator API - Docs</title>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+<div id="swagger-ui"></div>
+<script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+<script>
+window.onload = function() {
+    SwaggerUIBundle({
+        url: "/swagger.json",
+        dom_id: "#swagger-ui",
+        presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+        layout: "BaseLayout",
+        deepLinking: true,
+        showExtensions: true,
+        showCommonExtensions: true,
+        requestInterceptor: function(req) {
+            req.headers["Content-Type"] = "application/json";
+            return req;
+        }
+    });
+}
+</script>
+</body>
+</html>'''
+
+
+@app.route('/docs')
+def swagger_ui():
+    """Serve modern Swagger UI from CDN"""
+    resp = make_response(SWAGGER_UI_HTML)
+    resp.headers['Content-Type'] = 'text/html'
+    return resp
 
 logger = logging.getLogger(__name__)
 
@@ -215,10 +255,11 @@ class HealthCheck(Resource):
 class ValidateTransaction(Resource):
     """Transaction validation endpoint"""
 
-    @api.expect(transaction_request_model)
-    @api.marshal_with(transaction_response_model)
+    @api.expect(transaction_request_model, validate=True)
+    @api.marshal_with(transaction_response_model, code=200)
     @api.response(400, 'Validation failed', error_response_model)
     @api.response(415, 'Invalid Content-Type', error_response_model)
+    @api.doc(body=transaction_request_model)
     def post(self):
         """Validate a financial transaction and detect fraud signals"""
 

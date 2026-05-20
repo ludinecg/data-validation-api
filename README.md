@@ -4,6 +4,17 @@ A lightweight, high-performance REST API for validating financial transactions i
 
 **Status**: Production-ready | **License**: MIT
 
+### Live API
+The API is deployed on Render and available at:
+```
+https://data-validation-api.onrender.com
+```
+
+Quick test:
+```bash
+curl https://data-validation-api.onrender.com/health
+```
+
 ---
 
 ## Overview

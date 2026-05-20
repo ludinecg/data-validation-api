@@ -24,10 +24,10 @@ MAX_AMOUNT = 999_999_999.99
 MIN_ACCOUNT_ID = 1
 MAX_ACCOUNT_ID = 99_999
 
-# Fraud detection thresholds (tbh these are pretty conservative)
-DAILY_LIMIT = 100_000  # max per day
-SINGLE_TXN_HIGH_RISK = 50_000  # flag if above this
-SUSPICIOUS_HOUR_THRESHOLD = 10  # if >10 txns in 1hr, maybe fraud?
+# Fraud detection thresholds
+DAILY_LIMIT = 100_000              # Maximum withdrawal amount per day
+SINGLE_TXN_HIGH_RISK = 50_000      # Flag transactions above this amount
+SUSPICIOUS_HOUR_THRESHOLD = 10     # Reserved for future use (transactions per hour)
 
 
 # ============================================================================
@@ -175,7 +175,7 @@ def check_fraud_signals(payload: Dict) -> Dict:
             "message": f"Withdrawal of ${amount:,.2f} exceeds daily limit of ${DAILY_LIMIT:,}"
         })
 
-    # Signal 3: Round numbers (sometimes indicator of test txns)
+    # Signal 3: Round numbers frequently appear in test transactions or unusual patterns
     if amount % 100 == 0 and amount >= 1000:
         signals.append({
             "type": "ROUND_AMOUNT",
@@ -253,7 +253,7 @@ def validate_transaction():
         "risk_score": fraud_check["risk_score"],
     }
 
-    logger.info(f"✓ Transaction validated: {response_data['transaction_id']} | Risk: {fraud_check['risk_score']}")
+    logger.info(f"VALIDATED Transaction {response_data['transaction_id']} | Risk score: {fraud_check['risk_score']}")
     return success_response(response_data, status_code=200)
 
 

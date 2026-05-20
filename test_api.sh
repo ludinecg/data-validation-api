@@ -10,7 +10,7 @@ BASE_URL="http://localhost:5000"
 PASSED=0
 FAILED=0
 
-echo "🧪 Testing Transaction Validator API..."
+echo "Testing Transaction Validator API..."
 echo "Base URL: $BASE_URL"
 echo ""
 
@@ -38,10 +38,10 @@ test_endpoint() {
     body=$(echo "$response" | sed '$d')
 
     if [ "$http_code" = "$expected_status" ]; then
-        echo "✅ PASSED (HTTP $http_code)"
+        echo "[PASS] HTTP $http_code"
         ((PASSED++))
     else
-        echo "❌ FAILED (expected $expected_status, got $http_code)"
+        echo "[FAIL] Expected $expected_status, got $http_code"
         echo "Response: $body"
         ((FAILED++))
     fi
@@ -114,10 +114,10 @@ echo -n "Testing: POST without Content-Type ... "
 response=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/validate/transaction" \
     -d '{"amount": 100}' 2>/dev/null | tail -n 1)
 if [ "$response" = "415" ]; then
-    echo "✅ PASSED (HTTP 415)"
+    echo "[PASS] HTTP 415"
     ((PASSED++))
 else
-    echo "❌ FAILED (expected 415, got $response)"
+    echo "[FAIL] Expected 415, got $response"
     ((FAILED++))
 fi
 
@@ -127,9 +127,9 @@ echo "Test Results: $PASSED passed, $FAILED failed"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 if [ $FAILED -eq 0 ]; then
-    echo "✅ All tests passed!"
+    echo "[SUCCESS] All tests passed"
     exit 0
 else
-    echo "❌ Some tests failed"
+    echo "[FAILURE] Some tests failed"
     exit 1
 fi

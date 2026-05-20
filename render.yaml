@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: transaction-validator
+    env: python
+    plan: free
+
+    # Runtime & entry point
+    runtime: python-3.11
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --workers 2 --worker-class sync --timeout 30 --bind 0.0.0.0:$PORT app:app
+
+    # Environment variables (set these in Render dashboard)
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: PYTHONUNBUFFERED
+        value: 1
+
+    # Health check
+    healthCheckPath: /health
+
+    # Port configuration
+    port: 5000

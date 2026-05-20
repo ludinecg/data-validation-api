@@ -4,15 +4,24 @@ A lightweight, high-performance REST API for validating financial transactions i
 
 **Status**: Production-ready | **License**: MIT
 
-### Live API
+### Live API & Documentation
+
 The API is deployed on Render and available at:
-```
-https://data-validation-api.onrender.com
-```
+
+| Resource | URL |
+|----------|-----|
+| **API Base URL** | https://data-validation-api.onrender.com |
+| **Swagger Documentation** | https://data-validation-api.onrender.com/docs |
+| **Health Check** | https://data-validation-api.onrender.com/health |
 
 Quick test:
 ```bash
 curl https://data-validation-api.onrender.com/health
+```
+
+For interactive API testing, visit:
+```
+https://data-validation-api.onrender.com/docs
 ```
 
 ---

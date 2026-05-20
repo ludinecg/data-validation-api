@@ -198,20 +198,6 @@ health_ns = api.namespace('', description='Service health')
 validate_ns = api.namespace('', description='Transaction validation')
 
 
-@app.route('/')
-def index():
-    return {
-        "service": "Transaction Validator API",
-        "version": "1.0.0",
-        "docs": "http://localhost:5000/docs",
-        "health": "http://localhost:5000/health",
-        "endpoints": {
-            "POST /validate/transaction": "Validate a financial transaction",
-            "GET /health": "Service health check"
-        }
-    }, 200
-
-
 @health_ns.route('/health')
 class HealthCheck(Resource):
     """Service health check endpoint"""

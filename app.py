@@ -1,18 +1,28 @@
 """
-Financial transaction validation API built with Flask.
-Validates transactions with configurable rules and returns detailed error messages.
+Transaction Validator API - Financial transaction validation service.
+Validates transaction structure, detects fraud signals, returns risk scores.
 """
 
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request
+from flask_restx import Api, Resource, fields, Namespace
 from datetime import datetime, timedelta
-from functools import wraps
 import logging
-from typing import Dict, Tuple, Any
 import os
 
 app = Flask(__name__)
-logger = logging.getLogger(__name__)
 
+# Flask-RESTX Configuration (Swagger)
+app.config['RESTX_MASK_SWAGGER'] = False
+api = Api(
+    app,
+    version='1.0.0',
+    title='Transaction Validator API',
+    description='Real-time financial transaction validation with fraud detection.',
+    doc='/docs',
+    prefix=''
+)
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # Validation Rules & Constants
@@ -31,59 +41,56 @@ SUSPICIOUS_HOUR_THRESHOLD = 10     # Reserved for future use (transactions per h
 
 
 # ============================================================================
-# Response Helpers
+# Response Models for Swagger Documentation
 # ============================================================================
 
-def success_response(data: Any, status_code: int = 200) -> Tuple[Dict, int]:
-    """Return a properly formatted success response."""
-    return (
-        {
-            "status": "success",
-            "data": data,
-            "timestamp": datetime.utcnow().isoformat()
-        },
-        status_code,
-    )
+fraud_signal_model = api.model('FraudSignal', {
+    'type': fields.String(required=True, description='Signal type (HIGH_VALUE, EXCESSIVE_WITHDRAWAL, ROUND_AMOUNT)'),
+    'severity': fields.String(required=True, description='LOW, MEDIUM, or HIGH'),
+    'message': fields.String(required=True, description='Human-readable signal description')
+})
 
+transaction_request_model = api.model('TransactionRequest', {
+    'amount': fields.Float(required=True, description='Transaction amount ($0.01 - $999,999,999.99)'),
+    'transaction_type': fields.String(required=True, description='TRANSFER, PAYMENT, DEPOSIT, or WITHDRAWAL'),
+    'account_id': fields.Integer(required=True, description='Account ID (1 - 99,999)'),
+    'timestamp': fields.String(required=True, description='ISO 8601 timestamp (e.g., 2024-05-20T14:30:00)'),
+    'description': fields.String(required=False, description='Optional transaction description (max 500 chars)')
+})
 
-def error_response(message: str, errors: list = None, status_code: int = 400) -> Tuple[Dict, int]:
-    """Return a properly formatted error response."""
-    response = {
-        "status": "error",
-        "message": message,
-        "timestamp": datetime.utcnow().isoformat(),
-    }
-    if errors:
-        response["errors"] = errors
-    return response, status_code
+transaction_response_model = api.model('TransactionResponse', {
+    'transaction_id': fields.String(required=True, description='Unique transaction ID'),
+    'is_valid': fields.Boolean(required=True, description='Transaction passed validation'),
+    'amount': fields.Float(required=True, description='Transaction amount'),
+    'transaction_type': fields.String(required=True, description='Transaction type'),
+    'account_id': fields.Integer(required=True, description='Account ID'),
+    'fraud_signals': fields.List(fields.Nested(fraud_signal_model), required=True, description='Array of fraud signals'),
+    'risk_score': fields.Integer(required=True, description='Risk score (0 = clean, 100+ = very suspicious)')
+})
 
+error_response_model = api.model('ErrorResponse', {
+    'status': fields.String(required=True, description='error'),
+    'message': fields.String(required=True, description='Error message'),
+    'errors': fields.List(fields.String(), required=False, description='List of validation errors'),
+    'timestamp': fields.String(required=True, description='Response timestamp')
+})
 
-def log_request(f):
-    """Decorator to log incoming requests."""
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        logger.info(
-            f"→ {request.method} {request.path} | "
-            f"Client: {request.remote_addr} | "
-            f"Body: {request.get_json()}"
-        )
-        return f(*args, **kwargs)
-    return decorated
+health_response_model = api.model('HealthResponse', {
+    'service': fields.String(required=True, description='Service name'),
+    'status': fields.String(required=True, description='healthy')
+})
 
 
 # ============================================================================
 # Validation Functions
 # ============================================================================
 
-def validate_transaction_payload(payload: Dict) -> Tuple[bool, list]:
+def validate_transaction_payload(payload: dict) -> tuple:
     """
     Validate the transaction payload structure and values.
 
-    Args:
-        payload: The transaction data to validate
-
     Returns:
-        Tuple of (is_valid, list_of_errors)
+        Tuple of (is_valid: bool, errors: list)
     """
     errors = []
     required_fields = {"amount", "transaction_type", "account_id", "timestamp"}
@@ -132,7 +139,7 @@ def validate_transaction_payload(payload: Dict) -> Tuple[bool, list]:
             errors.append("Transaction timestamp cannot be older than 90 days")
 
     except (ValueError, TypeError):
-        errors.append("Timestamp must be in ISO 8601 format (e.g., 2024-05-18T14:30:00Z)")
+        errors.append("Timestamp must be in ISO 8601 format (e.g., 2024-05-20T14:30:00)")
 
     # Validate optional fields if present
     if "description" in payload:
@@ -145,15 +152,12 @@ def validate_transaction_payload(payload: Dict) -> Tuple[bool, list]:
     return len(errors) == 0, errors
 
 
-def check_fraud_signals(payload: Dict) -> Dict:
+def check_fraud_signals(payload: dict) -> dict:
     """
     Check for potential fraud signals. These are heuristic flags, not hard blocks.
 
-    Args:
-        payload: The validated transaction data
-
     Returns:
-        Dict with fraud signals detected
+        Dict with fraud signals detected and risk score
     """
     signals = []
     amount = float(payload.get("amount", 0))
@@ -167,7 +171,7 @@ def check_fraud_signals(payload: Dict) -> Dict:
             "message": f"Transaction amount ${amount:,.2f} exceeds ${SINGLE_TXN_HIGH_RISK:,} threshold"
         })
 
-    # Signal 2: Unusual transaction type for amount
+    # Signal 2: Excessive withdrawal beyond daily limit
     if txn_type == "WITHDRAWAL" and amount > DAILY_LIMIT:
         signals.append({
             "type": "EXCESSIVE_WITHDRAWAL",
@@ -187,421 +191,103 @@ def check_fraud_signals(payload: Dict) -> Dict:
 
 
 # ============================================================================
-# API Endpoints
+# API Namespaces
 # ============================================================================
 
-@app.route("/health", methods=["GET"])
-def health_check():
-    """
-    Health check endpoint for monitoring and load balancers.
-    Returns 200 if service is up.
-    """
-    return success_response({"status": "healthy", "service": "transaction-validator"})
+health_ns = api.namespace('', description='Service health')
+validate_ns = api.namespace('', description='Transaction validation')
 
 
-@app.route("/validate/transaction", methods=["POST"])
-@log_request
-def validate_transaction():
-    """
-    Validate a financial transaction.
+@health_ns.route('/health')
+class HealthCheck(Resource):
+    """Service health check endpoint"""
 
-    Expected JSON payload:
-    {
-        "amount": 1234.56,
-        "transaction_type": "TRANSFER",
-        "account_id": 12345,
-        "timestamp": "2024-05-18T14:30:00Z",
-        "description": "Optional txn description"
-    }
-
-    Returns:
-    - 200: Transaction is valid (with optional fraud signals)
-    - 400: Validation failed with detailed errors
-    - 415: Invalid Content-Type
-    """
-
-    # Check content type
-    if not request.is_json:
-        return error_response(
-            "Content-Type must be application/json",
-            status_code=415
-        )
-
-    payload = request.get_json()
-
-    # Validate payload structure & values
-    is_valid, validation_errors = validate_transaction_payload(payload)
-    if not is_valid:
-        logger.warning(f"Validation failed: {validation_errors}")
-        return error_response(
-            "Transaction validation failed",
-            errors=validation_errors,
-            status_code=400
-        )
-
-    # Check for fraud signals
-    fraud_check = check_fraud_signals(payload)
-
-    # Build response
-    response_data = {
-        "transaction_id": f"TXN-{hash(str(payload)) % 10**10:010d}",
-        "is_valid": True,
-        "amount": float(payload["amount"]),
-        "transaction_type": payload["transaction_type"].upper(),
-        "account_id": int(payload["account_id"]),
-        "fraud_signals": fraud_check["fraud_signals"],
-        "risk_score": fraud_check["risk_score"],
-    }
-
-    logger.info(f"VALIDATED Transaction {response_data['transaction_id']} | Risk score: {fraud_check['risk_score']}")
-    return success_response(response_data, status_code=200)
+    @api.marshal_with(health_response_model)
+    def get(self):
+        """Check if service is running"""
+        return {
+            "service": "transaction-validator",
+            "status": "healthy"
+        }, 200
 
 
-@app.route("/docs", methods=["GET"])
-def api_documentation():
-    """
-    Serve basic API documentation as HTML.
-    """
-    html_content = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Transaction Validator API - Docs</title>
-        <style>
-            * { margin: 0; padding: 0; box-sizing: border-box; }
-            body {
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                line-height: 1.6;
-                color: #333;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                min-height: 100vh;
-                padding: 20px;
-            }
-            .container {
-                max-width: 900px;
-                margin: 0 auto;
-                background: white;
-                border-radius: 10px;
-                box-shadow: 0 10px 40px rgba(0,0,0,0.1);
-                overflow: hidden;
-            }
-            .header {
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                padding: 40px 20px;
-                text-align: center;
-            }
-            .header h1 {
-                font-size: 2.5em;
-                margin-bottom: 10px;
-            }
-            .header p {
-                font-size: 1.1em;
-                opacity: 0.9;
-            }
-            .content {
-                padding: 40px;
-            }
-            section {
-                margin-bottom: 40px;
-            }
-            h2 {
-                color: #667eea;
-                border-bottom: 2px solid #667eea;
-                padding-bottom: 10px;
-                margin-bottom: 20px;
-            }
-            .endpoint {
-                background: #f5f5f5;
-                border-left: 4px solid #667eea;
-                padding: 15px;
-                margin: 15px 0;
-                border-radius: 5px;
-                font-family: 'Courier New', monospace;
-            }
-            .method {
-                display: inline-block;
-                padding: 4px 8px;
-                border-radius: 3px;
-                font-weight: bold;
-                margin-right: 10px;
-            }
-            .method.post { background: #4CAF50; color: white; }
-            .method.get { background: #2196F3; color: white; }
-            code {
-                background: #2c3e50;
-                color: #ecf0f1;
-                padding: 2px 6px;
-                border-radius: 3px;
-                font-family: 'Courier New', monospace;
-            }
-            pre {
-                background: #2c3e50;
-                color: #ecf0f1;
-                padding: 15px;
-                border-radius: 5px;
-                overflow-x: auto;
-                margin: 10px 0;
-                font-size: 0.9em;
-                line-height: 1.4;
-            }
-            .field {
-                margin: 10px 0;
-                padding: 10px;
-                background: white;
-                border-left: 3px solid #764ba2;
-            }
-            .field strong { color: #667eea; }
-            .field em { color: #666; }
-            .example {
-                background: #f9f9f9;
-                border: 1px solid #ddd;
-                padding: 15px;
-                border-radius: 5px;
-                margin: 15px 0;
-            }
-            .example h4 {
-                color: #333;
-                margin-bottom: 10px;
-            }
-            .status-code {
-                display: inline-block;
-                padding: 4px 10px;
-                border-radius: 3px;
-                font-weight: bold;
-                margin-right: 10px;
-            }
-            .status-200 { background: #d4edda; color: #155724; }
-            .status-400 { background: #f8d7da; color: #721c24; }
-            .status-415 { background: #f8d7da; color: #721c24; }
-            footer {
-                background: #f5f5f5;
-                padding: 20px;
-                text-align: center;
-                color: #666;
-                border-top: 1px solid #ddd;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>💳 Transaction Validator API</h1>
-                <p>Simple, fast financial transaction validation service</p>
-            </div>
+@validate_ns.route('/validate/transaction')
+class ValidateTransaction(Resource):
+    """Transaction validation endpoint"""
 
-            <div class="content">
-                <!-- Introduction -->
-                <section>
-                    <h2>Overview</h2>
-                    <p>The Transaction Validator API validates financial transactions and detects fraud signals in real-time. It's designed for high-throughput payment processing pipelines.</p>
-                    <p><strong>Base URL:</strong> <code>/api/v1</code> (or root if deployed)</p>
-                </section>
+    @api.expect(transaction_request_model)
+    @api.marshal_with(transaction_response_model)
+    @api.response(400, 'Validation failed', error_response_model)
+    @api.response(415, 'Invalid Content-Type', error_response_model)
+    def post(self):
+        """Validate a financial transaction and detect fraud signals"""
 
-                <!-- Endpoints -->
-                <section>
-                    <h2>Endpoints</h2>
+        # Check content type
+        if not request.is_json:
+            api.abort(415, 'Content-Type must be application/json')
 
-                    <div class="endpoint">
-                        <span class="method get">GET</span>
-                        <code>/health</code>
-                    </div>
-                    <p>Health check for monitoring. Always returns 200 if the service is running.</p>
-                    <div class="example">
-                        <h4>Example:</h4>
-                        <pre>curl https://your-api.com/health</pre>
-                        <strong>Response:</strong>
-                        <pre>{
-  "status": "success",
-  "data": {
-    "status": "healthy",
-    "service": "transaction-validator"
-  }
-}</pre>
-                    </div>
+        payload = request.get_json()
 
-                    <hr style="margin: 30px 0; border: none; border-top: 1px solid #ddd;">
+        # Log incoming request
+        logger.info(f"POST /validate/transaction | Client: {request.remote_addr} | Body: {payload}")
 
-                    <div class="endpoint">
-                        <span class="method post">POST</span>
-                        <code>/validate/transaction</code>
-                    </div>
-                    <p>Validate a transaction and check for fraud signals.</p>
+        # Validate payload structure & values
+        is_valid, validation_errors = validate_transaction_payload(payload)
+        if not is_valid:
+            logger.warning(f"Validation failed: {validation_errors}")
+            api.abort(400, 'Transaction validation failed', errors=validation_errors)
 
-                    <h3 style="margin-top: 20px; color: #333; font-size: 1.1em;">Request Body</h3>
-                    <div class="field">
-                        <strong>amount</strong> <em>number, required</em><br>
-                        Transaction amount. Must be between $0.01 and $999,999,999.99
-                    </div>
-                    <div class="field">
-                        <strong>transaction_type</strong> <em>string, required</em><br>
-                        Type of transaction. Must be one of: TRANSFER, PAYMENT, DEPOSIT, WITHDRAWAL
-                    </div>
-                    <div class="field">
-                        <strong>account_id</strong> <em>integer, required</em><br>
-                        Account identifier. Must be between 1 and 99,999
-                    </div>
-                    <div class="field">
-                        <strong>timestamp</strong> <em>string (ISO 8601), required</em><br>
-                        Transaction timestamp. Format: <code>2024-05-18T14:30:00Z</code>. Must be within 90 days.
-                    </div>
-                    <div class="field">
-                        <strong>description</strong> <em>string, optional</em><br>
-                        Optional description. Max 500 characters.
-                    </div>
+        # Check for fraud signals
+        fraud_check = check_fraud_signals(payload)
 
-                    <div class="example">
-                        <h4>Example Request:</h4>
-                        <pre>curl -X POST https://your-api.com/validate/transaction \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "amount": 5430.50,
-    "transaction_type": "TRANSFER",
-    "account_id": 12345,
-    "timestamp": "2024-05-18T14:30:00Z",
-    "description": "Payment for services rendered"
-  }'</pre>
-                    </div>
+        # Build response
+        response_data = {
+            "transaction_id": f"TXN-{hash(str(payload)) % 10**10:010d}",
+            "is_valid": True,
+            "amount": float(payload["amount"]),
+            "transaction_type": payload["transaction_type"].upper(),
+            "account_id": int(payload["account_id"]),
+            "fraud_signals": fraud_check["fraud_signals"],
+            "risk_score": fraud_check["risk_score"],
+        }
 
-                    <h3 style="margin-top: 20px; color: #333; font-size: 1.1em;">Response</h3>
-                    <div class="status-code status-200">200 OK</div>
-                    <p>Transaction is valid. May include fraud signals for manual review.</p>
-                    <pre>{
-  "status": "success",
-  "data": {
-    "transaction_id": "TXN-1234567890",
-    "is_valid": true,
-    "amount": 5430.50,
-    "transaction_type": "TRANSFER",
-    "account_id": 12345,
-    "fraud_signals": [
-      {
-        "type": "HIGH_VALUE",
-        "severity": "MEDIUM",
-        "message": "Transaction amount $50,000.00 exceeds $50,000 threshold"
-      }
-    ],
-    "risk_score": 25
-  },
-  "timestamp": "2024-05-18T15:45:30.123456"
-}</pre>
-
-                    <div class="status-code status-400">400 Bad Request</div>
-                    <p>Validation failed. Response includes detailed error messages.</p>
-                    <pre>{
-  "status": "error",
-  "message": "Transaction validation failed",
-  "errors": [
-    "Amount must be >= $0.01",
-    "Transaction type must be one of: TRANSFER, PAYMENT, DEPOSIT, WITHDRAWAL"
-  ],
-  "timestamp": "2024-05-18T15:45:30.123456"
-}</pre>
-
-                    <div class="status-code status-415">415 Unsupported Media Type</div>
-                    <p>Request Content-Type is not application/json.</p>
-                </section>
-
-                <!-- Fraud Signals -->
-                <section>
-                    <h2>Fraud Signals</h2>
-                    <p>The API checks for the following fraud indicators. These are heuristic flags, not hard blocks—high-value transactions can still be valid.</p>
-                    <div class="field">
-                        <strong>HIGH_VALUE</strong> [MEDIUM]<br>
-                        Transaction amount exceeds $50,000
-                    </div>
-                    <div class="field">
-                        <strong>EXCESSIVE_WITHDRAWAL</strong> [HIGH]<br>
-                        Withdrawal exceeds daily limit of $100,000
-                    </div>
-                    <div class="field">
-                        <strong>ROUND_AMOUNT</strong> [LOW]<br>
-                        Round transaction amounts ($1000, $5000, etc.) occur less in real data
-                    </div>
-                </section>
-
-                <!-- Error Codes -->
-                <section>
-                    <h2>Error Messages</h2>
-                    <p>Common validation errors and their meanings:</p>
-                    <div class="field">
-                        <strong>"Missing required fields: ..."</strong><br>
-                        One or more required fields are missing from the request.
-                    </div>
-                    <div class="field">
-                        <strong>"Amount must be >= $0.01"</strong><br>
-                        Amount is zero or negative.
-                    </div>
-                    <div class="field">
-                        <strong>"Amount cannot exceed $999,999,999.99"</strong><br>
-                        Amount is too large.
-                    </div>
-                    <div class="field">
-                        <strong>"Transaction type must be one of: TRANSFER, PAYMENT, DEPOSIT, WITHDRAWAL"</strong><br>
-                        Invalid transaction type. Check capitalization.
-                    </div>
-                    <div class="field">
-                        <strong>"Account ID must be between 1 and 99,999"</strong><br>
-                        Account ID is out of valid range.
-                    </div>
-                    <div class="field">
-                        <strong>"Timestamp must be in ISO 8601 format"</strong><br>
-                        Timestamp format is invalid. Use: <code>2024-05-18T14:30:00Z</code>
-                    </div>
-                </section>
-
-                <!-- Best Practices -->
-                <section>
-                    <h2>Best Practices</h2>
-                    <ul style="margin-left: 20px;">
-                        <li><strong>Always use HTTPS</strong> when calling the API in production</li>
-                        <li><strong>Validate timestamps</strong> on your client before sending—this API will reject transactions older than 90 days</li>
-                        <li><strong>Handle fraud signals gracefully</strong>—don't auto-reject. Flag for manual review or require additional verification</li>
-                        <li><strong>Retry on 5xx errors</strong> with exponential backoff, but not on 4xx errors</li>
-                        <li><strong>Log transaction IDs</strong> for debugging and audit trails</li>
-                    </ul>
-                </section>
-            </div>
-
-            <footer>
-                <p>Transaction Validator API v1.0 | Built with Flask | Deployed on Render</p>
-            </footer>
-        </div>
-    </body>
-    </html>
-    """
-    return html_content, 200, {"Content-Type": "text/html; charset=utf-8"}
+        logger.info(f"VALIDATED Transaction {response_data['transaction_id']} | Risk score: {fraud_check['risk_score']}")
+        return response_data, 200
 
 
 # ============================================================================
 # Error Handlers
 # ============================================================================
 
+@app.errorhandler(400)
+def bad_request(error):
+    """Handle 400 Bad Request errors"""
+    return {
+        "status": "error",
+        "message": "Bad request",
+        "timestamp": datetime.utcnow().isoformat()
+    }, 400
+
+
 @app.errorhandler(404)
 def not_found(error):
-    """Handle 404 errors."""
-    return error_response(
-        "Endpoint not found. Try /docs for API documentation",
-        status_code=404
-    )
+    """Handle 404 Not Found errors"""
+    return {
+        "status": "error",
+        "message": "Endpoint not found",
+        "timestamp": datetime.utcnow().isoformat()
+    }, 404
 
 
 @app.errorhandler(500)
 def internal_error(error):
-    """Handle 500 errors gracefully."""
+    """Handle 500 Internal Server errors"""
     logger.error(f"Internal server error: {error}")
-    return error_response(
-        "Internal server error. Please try again later",
-        status_code=500
-    )
-
-
-@app.before_request
-def before_request():
-    """Log all incoming requests."""
-    logger.debug(f"Request: {request.method} {request.path}")
+    return {
+        "status": "error",
+        "message": "Internal server error",
+        "timestamp": datetime.utcnow().isoformat()
+    }, 500
 
 
 # ============================================================================
